@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-
 // Using this method is going to be a bit costly for larger arrays, (ERC20 doesn't do this)
 // so find external services that are able to keep track of tokenholders. 
 contract Storage {
     address[] potentialTokenHolders;
     address owner;
+    address[] potentialDebtHolders;
 
     mapping(address => uint256) investQuantity;
 
@@ -22,7 +22,15 @@ contract Storage {
     function storeInvestment(address someone, uint256 quantityUSDC) public{
         investQuantity[someone] = quantityUSDC;
     }
-    
+
+    function storeDebt(address someone) public {
+        potentialDebtHolders.push(someone);
+    }
+
+    function queryDebtHolders() public returns(address[] memory) {
+        return potentialDebtHolders;
+    }
+     
     function queryInvestment(address someone) public returns (uint256){
         return investQuantity[someone];
     }

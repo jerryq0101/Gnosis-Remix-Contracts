@@ -5,6 +5,7 @@ import "@gnosis.pm/safe-contracts/contracts/GnosisSafe.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 import "./shares-address-Storage.sol";
+import "./create-loan.sol";
 
 contract Liquidator {
     address payable private _safeAddress;
@@ -12,19 +13,22 @@ contract Liquidator {
     address private _prioritySharesAddress;
 
     Storage _tokenAddressStorage;
+    LoanContract loanStorage;
     ERC20 USDC;
 
     constructor(address payable safeAddress, 
                 address sharesAddress,
                 address prioritySharesAddress,
                 ERC20 USDCAddress,
-                Storage tokenAddressStorage
+                Storage tokenAddressStorage,
+                LoanContract loanAddress
                 ) {
         USDC = USDCAddress;
         _safeAddress = safeAddress;
         _sharesAddress = sharesAddress;
         _prioritySharesAddress = prioritySharesAddress;
         _tokenAddressStorage = tokenAddressStorage;
+        loanStorage = loanAddress;
     }
     
     // FOR LIQUIDATE CONTRACT DEPLOYMENT I HAVE TO CALL APPROVE ALL USDC ASSETS IN SAFE. (new addy)
@@ -77,5 +81,27 @@ contract Liquidator {
                 USDC.transferFrom(_safeAddress, owner, owedAssets*10**6);
             }
         }
+    }
+
+    struct Loan {
+        address lender;
+        uint256 amount;
+        uint256 interestRate;
+        uint256 repaymentPeriod;
+        uint256 startTime;
+        uint256 index;
+        bool repaid;
+    }
+
+    function debtLiquidation() external {
+        // repayment of principle debt
+        address[] memory debtTokenHolders = _tokenAddressStorage.queryDebtHolders();
+        
+        for (uint i = 0; i < debtTokenHolders.length; i++) {
+            address debtHolder = debtTokenHolders[i];
+            Loan[] memory holderLoans = loanStorage.retrieveActiveLoans(debtHolder);
+
+        }
+        
     }
 }
