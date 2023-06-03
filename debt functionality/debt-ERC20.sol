@@ -7,7 +7,7 @@ contract Debt is ERC20 {
     address private _owner;
     address private _issuer;
 
-    constructor() ERC20("Debt", "DEBT"){
+    constructor(string memory name, string memory symbol) ERC20(name, symbol){
         _owner = msg.sender; 
         _issuer = 0x886E5ef0FE0DeD31C15f9f4f2eDFeBE64eDFa583;
     }
