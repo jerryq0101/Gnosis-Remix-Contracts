@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.0;
 
 import "./debt-ERC20.sol";
@@ -8,11 +9,12 @@ import "@openzeppelin/contracts/utils/math/Math.sol";
 contract LoanContract {
 
     ERC20 public usdcContract;
-    address public moduleAddress;
+    TimeUtils private timeUtils;
 
-    constructor(address usdc, address module) {
+
+    constructor(address usdc) {
         usdcContract = ERC20(usdc);
-        moduleAddress = module;
+        timeUtils = new TimeUtils();
     }
 
     struct Loan {
@@ -21,8 +23,10 @@ contract LoanContract {
         uint256 numberPaymentPeriods;
         uint256 usdPerPeriod;
         bool callable;
-        bool repaid;
         address debtAddress;
+        uint256[] paymentTracker;
+        uint256 currentPeriod;
+        bool fullyRepaid;
     }
 
     /* bytes32 - the final repayment date for principle - 2023-08-20 
@@ -70,14 +74,13 @@ contract LoanContract {
 
     /* Using time-utils.sol to get current time in form YYYY-MM-DD
     */
-    function getCurrentTimeString() internal returns (string memory) {
-        TimeUtils instance = new TimeUtils();
-        return instance.getCurrentDate();
+    function getCurrentTimeString() public view returns (string memory) {
+        return timeUtils.getCurrentDate();
     }
 
-    function getPaymentDateString(uint256 paymentPeriodInDays, uint256 numberOfPeriods) internal returns (string memory) {
-        TimeUtils instance = new TimeUtils();
-        return instance.getFutureDate(paymentPeriodInDays, numberOfPeriods);
+    function getPaymentDateString(uint256 paymentPeriodInDays, uint256 numberOfPeriods) internal view returns (string memory) {
+        uint256 futureTimestamp = timeUtils.getFutureTimestamp(paymentPeriodInDays, numberOfPeriods);
+        return timeUtils.convertEpochToDate(futureTimestamp);
     }
 
     /* Get Hashed key for byte32 storage in every mapping
@@ -103,6 +106,8 @@ contract LoanContract {
         REQUIRE THIS TO ONLY BE CALLED BY AUCTION CONTRACT
     */
 
+    event debtStored(string tokenIndex);
+
     function storeDebt(string memory Symbol, 
                         string memory Type, 
                         address debtTokenAddress,
@@ -111,9 +116,9 @@ contract LoanContract {
                         uint256 numberPaymentPeriods,
                         uint256 coupon,
                         bool callable
-    ) external {
 
-        Loan memory newLoan = Loan(principleAmount, paymentPeriodLength, numberPaymentPeriods, coupon, callable, false, debtTokenAddress);
+    ) external {
+        Loan memory newLoan = Loan(principleAmount, paymentPeriodLength, numberPaymentPeriods, coupon, callable, debtTokenAddress, new uint256[](numberPaymentPeriods-1), 0,false);
         // Store this loan
         string memory formattedString = getPaymentDateString(paymentPeriodLength, numberPaymentPeriods);
         bytes32 hashedDate = getHashedKey(formattedString);
@@ -134,6 +139,7 @@ contract LoanContract {
         bytes32 hashedTokenIndex = getHashedKey(TokenIndex);
         indexToLoan[hashedTokenIndex] = newLoan;
 
+        emit debtStored(TokenIndex);
         /*
             ^ This currently does not support n'th variable at the end, 
             so the same company CANNOT issue two debt taht ends at the same time.
@@ -145,7 +151,7 @@ contract LoanContract {
 
     /* Finding all of the periodic payment loans that needs payment today
     */
-    function allPeriodicRepaymentLoanToday() internal returns (Loan[] memory){
+    function allPeriodicRepaymentLoanToday() private view returns (Loan[] memory){
         string memory todayDate = getCurrentTimeString();
         require(getLoansFromPeriodicDate(todayDate).length > 0, 
             "There's no periodic payment period that ends today");
@@ -158,7 +164,7 @@ contract LoanContract {
     /*  Finding all debt token addresses that need periodic payment today, in order for the frontend
         to find all the tokenholders for these erc20 tokens.
     */
-    function getDebtAddressesPeriodicToday() public returns (address[] memory) {
+    function getDebtAddressesPeriodicToday() public view returns (address[] memory) {
         Loan[] memory periodicPaymentToday = allPeriodicRepaymentLoanToday();
         /* Store debt addresses in erc20 to give to external service to find tokenholders
         */
@@ -175,10 +181,10 @@ contract LoanContract {
     /* Finding all of the final repayment principle loans today 
     */
 
-    function allFinalRepaymentLoanToday() internal returns (Loan[] memory){
+    function allFinalRepaymentLoanToday() public view returns (Loan[] memory){
         string memory todayDate = getCurrentTimeString();
         require(getLoansFromDate(todayDate).length > 0, 
-            "There's no periodic payment period that ends today");
+            "There's no final repayment that ends today");
         
         /* All of the loan details for payment today
         */
@@ -187,7 +193,7 @@ contract LoanContract {
 
     /* Finding all of the erc20 debt addresses for the final principle loans
     */
-    function getDebtAddressesFinalToday() public returns (address[] memory) {
+    function getDebtAddressesFinalToday() public view returns (address[] memory) {
         Loan[] memory finalPaymentToday = allFinalRepaymentLoanToday();
         /* Store debt addresses in erc20 to give to external service to find tokenholders
         */
@@ -216,15 +222,34 @@ contract LoanContract {
 
         for (uint i = 0; i < tokenHolders.length; i++) 
         {   
-            Loan memory instance = periodicPaymentToday[i];
-            uint256 coupon = instance.usdPerPeriod;
-            address debtAddress = instance.debtAddress;
+            Loan memory loanInstance = periodicPaymentToday[i];
+
+            /*  Check if the current period has already been paid, 
+                if not, set it to be paid and increment the currentPeriod
+            */
+            uint256 periodStatus = loanInstance.paymentTracker[loanInstance.currentPeriod];
+            if (periodStatus == 1){
+                continue;
+            } else {
+                loanInstance.paymentTracker[loanInstance.currentPeriod] = 1;
+                loanInstance.currentPeriod +=1; 
+
+                // Update the periodic dates thing in the periodicDateToLoans. 
+                // MAY NEED TO UPDATE OTHER MAPPINGS AS WELL, BUT NOT AFFECTED FOR NOW
+                periodicDateToLoans[getHashedKey(getPaymentDateString(loanInstance.paymentPeriodLength, loanInstance.currentPeriod))][i] = loanInstance;
+            }  
+
+            uint256 coupon = loanInstance.usdPerPeriod;
+            address debtAddress = loanInstance.debtAddress;
             ERC20 debtContract = ERC20(debtAddress);
             uint256 totalTokens = debtContract.totalSupply();
 
             // Check if the company is not broke
             require(usdcContract.balanceOf(0x886E5ef0FE0DeD31C15f9f4f2eDFeBE64eDFa583) >= coupon, 
                 "The company is broke, AHHHHHHHHHHH");
+
+            // If Company cannot make the payment ^ - Bankrupcy function later
+
             // check if the company had allowed this to happen
             require(usdcContract.allowance(0x886E5ef0FE0DeD31C15f9f4f2eDFeBE64eDFa583, address(this)) >= coupon, 
                 "There is not enough allowance to transfer this coupon");
@@ -233,7 +258,7 @@ contract LoanContract {
             {
                 address tokenHolder = tokenHolders[i][j];
                 uint256 balance = debtContract.balanceOf(tokenHolders[i][j]);
-                uint256 proportion = Math.mulDiv(coupon, balance, totalTokens);
+                uint256 proportion = Math.mulDiv(coupon, balance, totalTokens) * 10**6;
                 usdcContract.transferFrom(0x886E5ef0FE0DeD31C15f9f4f2eDFeBE64eDFa583, tokenHolder, proportion);
             }
         }
@@ -254,9 +279,21 @@ contract LoanContract {
 
         for (uint i = 0; i < tokenHolders.length; i++) 
         {   
-            Loan memory instance = finalRepaymentToday[i];
-            uint256 principleAmount = instance.principleAmount;
-            address debtAddress = instance.debtAddress;
+            Loan memory loanInstance = finalRepaymentToday[i];
+            
+            /* Check if the loanInstance has already been paid. If not, set it to be paid and pay it after. 
+            */
+            if (loanInstance.fullyRepaid){
+                continue;
+            } else {
+                loanInstance.fullyRepaid = true;
+                // Update the mapping with the new loanInstance with the updated fullyRepaid variable
+                // MAY NEED TO UPDATE OTHER MAPPINGS AS WELL, BUT NOT AFFECTED FOR NOW
+                dateToLoans[getHashedKey(getPaymentDateString(loanInstance.paymentPeriodLength, loanInstance.numberPaymentPeriods))][i] = loanInstance;
+            }
+
+            uint256 principleAmount = loanInstance.principleAmount;
+            address debtAddress = loanInstance.debtAddress;
             ERC20 debtContract = ERC20(debtAddress);
             uint256 totalTokens = debtContract.totalSupply();
 
@@ -271,8 +308,8 @@ contract LoanContract {
             {
                 address tokenHolder = tokenHolders[i][j];
                 uint256 balance = debtContract.balanceOf(tokenHolders[i][j]);
-                uint256 proportion = Math.mulDiv(principleAmount, balance, totalTokens);
-                usdcContract.transferFrom(0x886E5ef0FE0DeD31C15f9f4f2eDFeBE64eDFa583, tokenHolder, proportion);
+                uint256 proportion = Math.mulDiv(principleAmount, balance, totalTokens) * 10**6;
+                usdcContract.transferFrom(0x886E5ef0FE0DeD31C15f9f4f2eDFeBE64eDFa583, tokenHolder, proportion + (loanInstance.usdPerPeriod * 10**6));
             }
         }
     }

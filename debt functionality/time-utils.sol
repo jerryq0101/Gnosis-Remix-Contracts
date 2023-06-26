@@ -11,6 +11,11 @@ contract TimeUtils {
         return _formatDate(futureTimestamp);
     }
 
+    function getFutureTimestamp(uint256 paymentPeriodInDays, uint256 numberOfPeriods) public view returns (uint256) {
+        uint256 futureTimestamp = block.timestamp + (paymentPeriodInDays * 1 days * numberOfPeriods);
+        return futureTimestamp;
+    }
+
     function convertEpochToDate(uint256 timestamp) public pure returns (string memory) {
         return _formatDate(timestamp);
     }
@@ -28,12 +33,11 @@ contract TimeUtils {
         uint256 day = 86400; // Number of seconds in a day
 
         // Calculate the components of the date
-        uint256 year = (timestamp / (day * 365)) + 1970;
-        uint256 month;
+        uint256 secondsAccountedFor = 0;
+        uint256 year = 1970;
+        uint256 month = 1;
         uint256 dayOfMonth;
 
-        // Calculate the month and day of the month
-        uint256 secondsAccountedFor = 0;
         uint256[] memory monthLengths = new uint256[](12);
         monthLengths[0] = 31;
         monthLengths[1] = 28;
@@ -48,15 +52,25 @@ contract TimeUtils {
         monthLengths[10] = 30;
         monthLengths[11] = 31;
 
-        bool leapYear = _isLeapYear(year);
-        for (month = 1; month <= 12; month++) {
-            uint256 monthLength = monthLengths[month - 1];
-            if (leapYear && month == 2) {
-                monthLength += 1; // Leap year, February has 29 days
-            }
-            if (timestamp >= secondsAccountedFor + day * monthLength) {
-                secondsAccountedFor += day * monthLength;
+        while (true) {
+            uint256 yearLength = _isLeapYear(year) ? 366 : 365;
+            if (timestamp >= secondsAccountedFor + day * yearLength) {
+                secondsAccountedFor += day * yearLength;
+                year++;
             } else {
+                uint256 index = 0;
+                for (index = 0; index < 12; index++) {
+                    uint256 monthLength = monthLengths[index];
+                    if (index == 1 && _isLeapYear(year)) {
+                        monthLength += 1; // Leap year, February has 29 days
+                    }
+                    if (timestamp >= secondsAccountedFor + day * monthLength) {
+                        secondsAccountedFor += day * monthLength;
+                        month++;
+                    } else {
+                        break;
+                    }
+                }
                 dayOfMonth = (timestamp - secondsAccountedFor) / day + 1;
                 break;
             }
@@ -66,6 +80,14 @@ contract TimeUtils {
         string memory yearStr = _uintToString(year);
         string memory monthStr = _uintToString(month);
         string memory dayStr = _uintToString(dayOfMonth);
+
+        // Add leading zeros if necessary
+        if (bytes(monthStr).length < 2) {
+            monthStr = string(abi.encodePacked("0", monthStr));
+        }
+        if (bytes(dayStr).length < 2) {
+            dayStr = string(abi.encodePacked("0", dayStr));
+        }
 
         string memory date = string(abi.encodePacked(yearStr, "-", monthStr, "-", dayStr));
         return date;
